@@ -25,6 +25,8 @@ static int smartFadeCountdown = 0;
 static int smartLastState = -1; // 0: off, 1: fade, 2: solid, 3: blink
 static int smartFullToggleCounter = 0;
 static bool smartFullBlinkPhase = false;
+static int smartFull100Counter = 0;
+static bool smartFullTimeout = false;
 
 static void applySolidPattern(void) {
     memset(&Pattern, 0, sizeof(Pattern));
@@ -154,6 +156,8 @@ void setPattern(char* buffer) {
         smartLastState = -1;
         smartFullToggleCounter = 0;
         smartFullBlinkPhase = false;
+        smartFull100Counter = 0;
+        smartFullTimeout = false;
     }
     if (strcmp(buffer, "charge") != 0) {
         chargeSelected = false;
@@ -170,6 +174,8 @@ void setPattern(char* buffer) {
         smartLastState = -1;
         smartFullToggleCounter = 0;
         smartFullBlinkPhase = false;
+        smartFull100Counter = 0;
+        smartFullTimeout = false;
     }
 }
 
@@ -301,6 +307,11 @@ int main(int argc, char* argv[]) {
             int currentSegment = batteryCharge / 10;
 
             if (chargerType == PsmChargerType_Unconnected) {
+                smartFull100Counter = 0;
+                smartFullTimeout = false;
+                smartFullToggleCounter = 0;
+                smartFullBlinkPhase = false;
+
                 if (smartBatterySegment == -1) {
                     smartBatterySegment = currentSegment;
                 }
@@ -336,28 +347,43 @@ int main(int argc, char* argv[]) {
                 smartFadeCountdown = 0;
 
                 if (batteryCharge >= 100) {
-                    smartFullToggleCounter++;
-                    if (smartFullToggleCounter >= 10) {
-                        smartFullToggleCounter = 0;
-                        smartFullBlinkPhase = !smartFullBlinkPhase;
+                    smartFull100Counter++;
+                    if (smartFull100Counter >= 3600) {
+                        smartFullTimeout = true;
                     }
 
-                    if (smartFullBlinkPhase) {
-                        if (smartLastState != 3) {
-                            applyBlinkPattern();
-                            smartLastState = 3;
+                    if (smartFullTimeout) {
+                        if (smartLastState != 0) {
+                            applyOffPattern();
+                            smartLastState = 0;
                             changeLed();
                         }
                     } else {
-                        if (smartLastState != 2) {
-                            applySolidPattern();
-                            smartLastState = 2;
-                            changeLed();
+                        smartFullToggleCounter++;
+                        if (smartFullToggleCounter >= 10) {
+                            smartFullToggleCounter = 0;
+                            smartFullBlinkPhase = !smartFullBlinkPhase;
+                        }
+
+                        if (smartFullBlinkPhase) {
+                            if (smartLastState != 3) {
+                                applyBlinkPattern();
+                                smartLastState = 3;
+                                changeLed();
+                            }
+                        } else {
+                            if (smartLastState != 2) {
+                                applySolidPattern();
+                                smartLastState = 2;
+                                changeLed();
+                            }
                         }
                     }
                 } else {
                     smartFullToggleCounter = 0;
                     smartFullBlinkPhase = false;
+                    smartFull100Counter = 0;
+                    smartFullTimeout = false;
                     if (smartLastState != 1) {
                         applyFadePattern();
                         smartLastState = 1;
