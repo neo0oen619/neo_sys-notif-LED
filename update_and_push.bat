@@ -81,11 +81,10 @@ if errorlevel 1 (
 )
 
 echo.
-echo Pushing to your GitHub repo using the username and token you entered...
-echo Repo: https://github.com/neo0oen619/sys-notif-LED.git
-git push "https://%GH_USER%:%GH_TOKEN%@github.com/neo0oen619/sys-notif-LED.git" %BRANCH%
-REM If you REALLY want to always overwrite remote history, change the line above to:
-REM git push "https://%GH_USER%:%GH_TOKEN%@github.com/neo0oen619/sys-notif-LED.git" %BRANCH% --force
+echo Pushing HEAD to the main branch on GitHub using the username and token you entered...
+echo Repo: https://github.com/neo0oen619/sys-notif-LED.git (HEAD -> main, force)
+git push "https://%GH_USER%:%GH_TOKEN%@github.com/neo0oen619/sys-notif-LED.git" HEAD:main --force
+REM If you want to avoid overwriting remote history, remove the --force flag above.
 
 if errorlevel 1 (
     echo.
