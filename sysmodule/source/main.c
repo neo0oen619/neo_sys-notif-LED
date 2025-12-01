@@ -1,4 +1,4 @@
-#include <stdio.h>
+﻿#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <switch.h>
@@ -52,6 +52,7 @@ static int smartDischargeIntervalSeconds = 0;
 static int smartDischargeIntervalLoops = 0;
 static int smartDischargeIntervalCounter = 0;
 static int smartDischargeBurstLoops = 0;
+static int smartDischargeBurstLoopsMax = 4;
 static int smartDischargePattern = 0;          // 0: off, 1: solid, 2: dim, 3: fade, 4: blink
 
 static int smartDropNotificationSeconds = 10;
@@ -65,6 +66,8 @@ static void applyDimPattern(void);
 static void applyFadePattern(void);
 static void applyOffPattern(void);
 static void applyBlinkPattern(void);
+static void changeLed(void);
+static void handleFullBlinkNotification(void);
 
 static void applyPatternCode(int code) {
     switch (code) {
@@ -130,6 +133,46 @@ static void applyBlinkPattern(void) {
     Pattern.miniCycles[1].transitionSteps = 0x2;
 }
 
+static void handleFullBlinkNotification(void) {
+    if (smartFullBlinkActiveLoops > 0) {
+        smartFullBlinkActiveLoops--;
+        if (smartFullPattern == 0) {
+            if (smartLastState != 0) {
+                applyOffPattern();
+                smartLastState = 0;
+                changeLed();
+            }
+        } else if (smartLastState != smartFullPattern) {
+            applyPatternCode(smartFullPattern);
+            smartLastState = smartFullPattern;
+            changeLed();
+        }
+    } else {
+        smartFullToggleCounter++;
+        if (smartFullToggleCounter >= smartFullToggleThreshold) {
+            smartFullToggleCounter = 0;
+            smartFullBlinkActiveLoops = 4; // ~2 seconds of notification
+            if (smartFullPattern == 0) {
+                if (smartLastState != 0) {
+                    applyOffPattern();
+                    smartLastState = 0;
+                    changeLed();
+                }
+            } else if (smartLastState != smartFullPattern) {
+                applyPatternCode(smartFullPattern);
+                smartLastState = smartFullPattern;
+                changeLed();
+            }
+        } else {
+            if (smartLastState != 0) {
+                applyOffPattern();
+                smartLastState = 0;
+                changeLed();
+            }
+        }
+    }
+}
+
 static void loadSmartConfig(void) {
     int low = 15;
     int timeoutMin = 30;
@@ -137,6 +180,7 @@ static void loadSmartConfig(void) {
     int chargeIntervalSec = 0;
     int lowIntervalSec = 0;
     int dischargeIntervalSec = 0;
+    int dischargeDurationSec = 2;
     int dischargePattern = 0;
     int dropSec = 10;
     int dropPat = 3;
@@ -164,6 +208,8 @@ static void loadSmartConfig(void) {
                     if (v >= 0 && v <= 600) lowIntervalSec = v;
                 } else if (strcmp(key, "discharge_interval_seconds") == 0) {
                     if (v >= 0 && v <= 600) dischargeIntervalSec = v;
+                } else if (strcmp(key, "discharge_duration_seconds") == 0) {
+                    if (v >= 0 && v <= 600) dischargeDurationSec = v;
                 } else if (strcmp(key, "discharge_pattern") == 0) {
                     if (strcmp(value, "solid") == 0) {
                         dischargePattern = 1;
@@ -206,25 +252,25 @@ static void loadSmartConfig(void) {
                     if (v >= 1 && v <= 100) smartDropStepPercent = v;
                 } else if (strcmp(key, "full_pattern") == 0) {
                     if (strcmp(value, "solid") == 0) {
-                        fullPat = 2;
-                    } else if (strcmp(value, "dim") == 0) {
-                        fullPat = 4;
-                    } else if (strcmp(value, "fade") == 0) {
                         fullPat = 1;
-                    } else if (strcmp(value, "blink") == 0) {
+                    } else if (strcmp(value, "dim") == 0) {
+                        fullPat = 2;
+                    } else if (strcmp(value, "fade") == 0) {
                         fullPat = 3;
+                    } else if (strcmp(value, "blink") == 0) {
+                        fullPat = 4;
                     } else {
                         fullPat = 0;
                     }
                 } else if (strcmp(key, "low_pattern") == 0) {
                     if (strcmp(value, "solid") == 0) {
-                        lowPat = 2;
-                    } else if (strcmp(value, "dim") == 0) {
-                        lowPat = 4;
-                    } else if (strcmp(value, "fade") == 0) {
                         lowPat = 1;
-                    } else if (strcmp(value, "blink") == 0) {
+                    } else if (strcmp(value, "dim") == 0) {
+                        lowPat = 2;
+                    } else if (strcmp(value, "fade") == 0) {
                         lowPat = 3;
+                    } else if (strcmp(value, "blink") == 0) {
+                        lowPat = 4;
                     } else {
                         lowPat = 0;
                     }
@@ -250,6 +296,7 @@ static void loadSmartConfig(void) {
     smartDischargeIntervalLoops = (smartDischargeIntervalSeconds > 0) ? smartDischargeIntervalSeconds * 2 : 0;
     smartDischargeIntervalCounter = 0;
     smartDischargeBurstLoops = 0;
+    smartDischargeBurstLoopsMax = (dischargeDurationSec > 0) ? dischargeDurationSec * 2 : 4;
     smartDischargePattern = dischargePattern;
     smartDropNotificationSeconds = dropSec;
     smartDropNotificationPattern = dropPat;
@@ -324,7 +371,7 @@ void __appExit(void) {
 void setPattern(char* buffer) {
     if (strcmp(buffer, "solid") == 0) {
         applySolidPattern();
-    } if (strcmp(buffer, "dim") == 0) {
+    } else if (strcmp(buffer, "dim") == 0) {
         applyDimPattern();
     } else if (strcmp(buffer, "fade") == 0) {
         applyFadePattern();
@@ -397,7 +444,7 @@ void setLed(HidsysUniquePadId* padId) {
     }
 }
 
-void changeLed() {
+static void changeLed(void) {
     for (int i = 0; i < numConnectedPads; i++) {
         setLed(&connectedPads[i]);
     }
@@ -448,14 +495,15 @@ int main(int argc, char* argv[]) {
     loadSmartConfig();
     FILE* file = fopen("sdmc:/config/sys-notif-LED/type", "r");
     if (!file) {
-        fclose(file);
         FILE* f = fopen("sdmc:/config/sys-notif-LED/type", "w");
         if (f) {
             fprintf(f, "dim");
             fclose(f);
         }
     }
-    fclose(file);
+    else {
+        fclose(file);
+    }
     file = fopen("sdmc:/config/sys-notif-LED/type", "r");
     if (file) {
         char buffer[256];
@@ -502,41 +550,51 @@ int main(int argc, char* argv[]) {
 
             int currentSegment = (smartDropStepPercent > 0) ? (batteryCharge / smartDropStepPercent) : (batteryCharge / 10);
 
-            if (chargerType == PsmChargerType_Unconnected) {
+            bool onBattery = (chargerType == PsmChargerType_Unconnected);
+
+            if (onBattery) {
+                smartChargeIntervalCounter = 0;
+                smartChargeBurstLoops = 0;
+            }
+
+            if (!onBattery && batteryCharge >= 100) {
+                smartBatterySegment = -1;
+                smartFadeCountdown = 0;
+
+                smartFull100Counter++;
+                if (smartFull100Counter >= smartFullTimeoutLoops) {
+                    smartFullTimeout = true;
+                }
+
+                if (smartFullTimeout) {
+                    if (smartLastState != 0) {
+                        applyOffPattern();
+                        smartLastState = 0;
+                        changeLed();
+                    }
+                } else {
+                    handleFullBlinkNotification();
+                }
+            } else {
                 smartFull100Counter = 0;
                 smartFullTimeout = false;
                 smartFullToggleCounter = 0;
                 smartFullBlinkPhase = false;
                 smartFullBlinkActiveLoops = 0;
-                smartChargeIntervalCounter = 0;
-                smartChargeBurstLoops = 0;
 
-                if (smartBatterySegment == -1) {
-                    smartBatterySegment = currentSegment;
-                }
+                if (onBattery) {
+                    if (smartBatterySegment == -1) {
+                        smartBatterySegment = currentSegment;
+                    }
 
-                if (currentSegment < smartBatterySegment && batteryCharge >= smartLowBatteryThreshold) {
-                    smartBatterySegment = currentSegment;
-                    smartFadeCountdown = smartDropNotificationLoops;
-                }
+                    if (currentSegment < smartBatterySegment && batteryCharge >= smartLowBatteryThreshold) {
+                        smartBatterySegment = currentSegment;
+                        smartFadeCountdown = smartDropNotificationLoops;
+                    }
 
-                if (batteryCharge < smartLowBatteryThreshold) {
-                    smartFadeCountdown = 0;
-                    if (smartLowIntervalLoops <= 0) {
-                        if (smartLowPattern == 0) {
-                            if (smartLastState != 0) {
-                                applyOffPattern();
-                                smartLastState = 0;
-                                changeLed();
-                            }
-                        } else if (smartLastState != smartLowPattern) {
-                            applyPatternCode(smartLowPattern);
-                            smartLastState = smartLowPattern;
-                            changeLed();
-                        }
-                    } else {
-                        if (smartLowBurstLoops > 0) {
-                            smartLowBurstLoops--;
+                    if (batteryCharge < smartLowBatteryThreshold) {
+                        smartFadeCountdown = 0;
+                        if (smartLowIntervalLoops <= 0) {
                             if (smartLowPattern == 0) {
                                 if (smartLastState != 0) {
                                     applyOffPattern();
@@ -549,10 +607,8 @@ int main(int argc, char* argv[]) {
                                 changeLed();
                             }
                         } else {
-                            smartLowIntervalCounter++;
-                            if (smartLowIntervalCounter >= smartLowIntervalLoops) {
-                                smartLowIntervalCounter = 0;
-                                smartLowBurstLoops = 4; // ~2 seconds of notification
+                            if (smartLowBurstLoops > 0) {
+                                smartLowBurstLoops--;
                                 if (smartLowPattern == 0) {
                                     if (smartLastState != 0) {
                                         applyOffPattern();
@@ -565,131 +621,89 @@ int main(int argc, char* argv[]) {
                                     changeLed();
                                 }
                             } else {
-                                if (smartLastState != 0) {
-                                    applyOffPattern();
-                                    smartLastState = 0;
-                                    changeLed();
-                                }
-                            }
-                        }
-                    }
-                } else if (smartFadeCountdown > 0) {
-                    smartFadeCountdown--;
-                    if (smartDropNotificationPattern == 0) {
-                        if (smartLastState != 0) {
-                            applyOffPattern();
-                            smartLastState = 0;
-                            changeLed();
-                        }
-                    } else if (smartLastState != smartDropNotificationPattern) {
-                        applyPatternCode(smartDropNotificationPattern);
-                        smartLastState = smartDropNotificationPattern;
-                        changeLed();
-                    }
-                } else {
-                    smartLowIntervalCounter = 0;
-                    smartLowBurstLoops = 0;
-                    if (smartDischargeIntervalLoops <= 0 || smartDischargePattern == 0) {
-                        if (smartLastState != 0) {
-                            applyOffPattern();
-                            smartLastState = 0;
-                            changeLed();
-                        }
-                    } else {
-                        if (smartDischargeBurstLoops > 0) {
-                            smartDischargeBurstLoops--;
-                            if (smartLastState != smartDischargePattern) {
-                                applyPatternCode(smartDischargePattern);
-                                smartLastState = smartDischargePattern;
-                                changeLed();
-                            }
-                        } else {
-                            smartDischargeIntervalCounter++;
-                            if (smartDischargeIntervalCounter >= smartDischargeIntervalLoops) {
-                                smartDischargeIntervalCounter = 0;
-                                smartDischargeBurstLoops = 4; // ~2 seconds
-                                if (smartDischargePattern == 0) {
+                                smartLowIntervalCounter++;
+                                if (smartLowIntervalCounter >= smartLowIntervalLoops) {
+                                    smartLowIntervalCounter = 0;
+                                    smartLowBurstLoops = 4; // ~2 seconds of notification
+                                    if (smartLowPattern == 0) {
+                                        if (smartLastState != 0) {
+                                            applyOffPattern();
+                                            smartLastState = 0;
+                                            changeLed();
+                                        }
+                                    } else if (smartLastState != smartLowPattern) {
+                                        applyPatternCode(smartLowPattern);
+                                        smartLastState = smartLowPattern;
+                                        changeLed();
+                                    }
+                                } else {
                                     if (smartLastState != 0) {
                                         applyOffPattern();
                                         smartLastState = 0;
                                         changeLed();
                                     }
-                                } else {
+                                }
+                            }
+                        }
+                    } else if (smartFadeCountdown > 0) {
+                        smartFadeCountdown--;
+                        if (smartDropNotificationPattern == 0) {
+                            if (smartLastState != 0) {
+                                applyOffPattern();
+                                smartLastState = 0;
+                                changeLed();
+                            }
+                        } else if (smartLastState != smartDropNotificationPattern) {
+                            applyPatternCode(smartDropNotificationPattern);
+                            smartLastState = smartDropNotificationPattern;
+                            changeLed();
+                        }
+                    } else {
+                        smartLowIntervalCounter = 0;
+                        smartLowBurstLoops = 0;
+                        if (smartDischargeIntervalLoops <= 0 || smartDischargePattern == 0) {
+                            if (smartLastState != 0) {
+                                applyOffPattern();
+                                smartLastState = 0;
+                                changeLed();
+                            }
+                        } else {
+                            if (smartDischargeBurstLoops > 0) {
+                                smartDischargeBurstLoops--;
+                                if (smartLastState != smartDischargePattern) {
                                     applyPatternCode(smartDischargePattern);
                                     smartLastState = smartDischargePattern;
                                     changeLed();
                                 }
                             } else {
-                                if (smartLastState != 0) {
-                                    applyOffPattern();
-                                    smartLastState = 0;
-                                    changeLed();
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                smartBatterySegment = -1;
-                smartFadeCountdown = 0;
-
-                if (batteryCharge >= 100) {
-                    smartFull100Counter++;
-                    if (smartFull100Counter >= smartFullTimeoutLoops) {
-                        smartFullTimeout = true;
-                    }
-
-                    if (smartFullTimeout) {
-                        if (smartLastState != 0) {
-                            applyOffPattern();
-                            smartLastState = 0;
-                            changeLed();
-                        }
-                    } else {
-                        if (smartFullBlinkActiveLoops > 0) {
-                            smartFullBlinkActiveLoops--;
-                            if (smartFullPattern == 0) {
-                                if (smartLastState != 0) {
-                                    applyOffPattern();
-                                    smartLastState = 0;
-                                    changeLed();
-                                }
-                            } else if (smartLastState != smartFullPattern) {
-                                applyPatternCode(smartFullPattern);
-                                smartLastState = smartFullPattern;
-                                changeLed();
-                            }
-                        } else {
-                            smartFullToggleCounter++;
-                            if (smartFullToggleCounter >= smartFullToggleThreshold) {
-                                smartFullToggleCounter = 0;
-                                smartFullBlinkActiveLoops = 4; // ~2 seconds of notification
-                                if (smartFullPattern == 0) {
+                                smartDischargeIntervalCounter++;
+                                if (smartDischargeIntervalCounter >= smartDischargeIntervalLoops) {
+                                smartDischargeIntervalCounter = 0;
+                                smartDischargeBurstLoops = smartDischargeBurstLoopsMax; // configurable burst duration
+                                    if (smartDischargePattern == 0) {
+                                        if (smartLastState != 0) {
+                                            applyOffPattern();
+                                            smartLastState = 0;
+                                            changeLed();
+                                        }
+                                    } else {
+                                        applyPatternCode(smartDischargePattern);
+                                        smartLastState = smartDischargePattern;
+                                        changeLed();
+                                    }
+                                } else {
                                     if (smartLastState != 0) {
                                         applyOffPattern();
                                         smartLastState = 0;
                                         changeLed();
                                     }
-                                } else if (smartLastState != smartFullPattern) {
-                                    applyPatternCode(smartFullPattern);
-                                    smartLastState = smartFullPattern;
-                                    changeLed();
-                                }
-                            } else {
-                                if (smartLastState != 0) {
-                                    applyOffPattern();
-                                    smartLastState = 0;
-                                    changeLed();
                                 }
                             }
                         }
                     }
                 } else {
-                    smartFullToggleCounter = 0;
-                    smartFullBlinkPhase = false;
-                    smartFull100Counter = 0;
-                    smartFullTimeout = false;
-                    smartFullBlinkActiveLoops = 0;
+                    smartBatterySegment = -1;
+                    smartFadeCountdown = 0;
 
                     if (smartChargeIntervalLoops <= 0) {
                         if (smartChargePattern == 0) {

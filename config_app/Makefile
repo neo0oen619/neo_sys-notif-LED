@@ -24,10 +24,10 @@ DATA		:=	data
 INCLUDES	:=	include
 
 APP_TITLE	:=	sys-notif-LED config
-APP_AUTHOR	:=	sys-notif-LED
-APP_VERSION	:=	1.0.0
+APP_AUTHOR	:=	neo0oen619
+APP_VERSION	:=	6.1.9
 
-NO_ICON		:=  1
+ICON		:=	../logo.png
 
 #---------------------------------------------------------------------------------
 # options for code generation
@@ -185,4 +185,3 @@ $(OFILES_SRC)	: $(HFILES_BIN)
 #---------------------------------------------------------------------------------------
 endif
 #---------------------------------------------------------------------------------------
-

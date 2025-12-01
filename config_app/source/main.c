@@ -4,6 +4,7 @@
 #include <string.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <stdarg.h>
 
 typedef struct {
     int low_battery_threshold;
@@ -15,11 +16,80 @@ typedef struct {
     int low_interval_seconds;
     int low_pattern;
     int discharge_interval_seconds;
+    int discharge_duration_seconds;
     int discharge_pattern; // 0: off, 1: solid, 2: dim, 3: fade, 4: blink
     int drop_step_percent;
     int drop_notification_seconds;
     int drop_notification_pattern;
+    int log_enabled;
 } SmartConfig;
+
+static char gCurrentMode[32] = "unknown";
+static int gLogEnabled = 1;
+
+static void logLine(const char* fmt, ...) {
+    if (!gLogEnabled)
+        return;
+
+    DIR* dir = opendir("sdmc:/config/sys-notif-LED");
+    if (dir) {
+        closedir(dir);
+    } else {
+        mkdir("sdmc:/config/sys-notif-LED", 0777);
+    }
+
+    FILE* f = fopen("sdmc:/config/sys-notif-LED/config_app_log.txt", "a");
+    if (!f)
+        return;
+
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(f, fmt, args);
+    va_end(args);
+
+    fputc('\n', f);
+    fclose(f);
+}
+
+static void loadCurrentMode(void) {
+    FILE* f = fopen("sdmc:/config/sys-notif-LED/type", "r");
+    if (!f) {
+        strcpy(gCurrentMode, "unknown");
+        logLine("[loadCurrentMode] type not found");
+        return;
+    }
+
+    if (fgets(gCurrentMode, sizeof(gCurrentMode), f)) {
+        gCurrentMode[strcspn(gCurrentMode, "\r\n")] = 0;
+    } else {
+        strcpy(gCurrentMode, "unknown");
+    }
+
+    logLine("[loadCurrentMode] mode='%s'", gCurrentMode);
+    fclose(f);
+}
+
+static void setModeSmart(void) {
+    DIR* dir = opendir("sdmc:/config/sys-notif-LED");
+    if (dir) {
+        closedir(dir);
+    } else {
+        mkdir("sdmc:/config/sys-notif-LED", 0777);
+    }
+
+    FILE* f = fopen("sdmc:/config/sys-notif-LED/reset", "w");
+    if (f)
+        fclose(f);
+
+    f = fopen("sdmc:/config/sys-notif-LED/type", "w");
+    if (f) {
+        fputs("smart\n", f);
+        fclose(f);
+    }
+
+    strcpy(gCurrentMode, "smart");
+    logLine("[setModeSmart] mode set to smart");
+}
 
 static void loadConfig(SmartConfig* cfg) {
     cfg->low_battery_threshold = 15;
@@ -31,16 +101,18 @@ static void loadConfig(SmartConfig* cfg) {
     cfg->low_interval_seconds = 0;
     cfg->low_pattern = 4; // blink
     cfg->discharge_interval_seconds = 0;
+    cfg->discharge_duration_seconds = 2;
     cfg->discharge_pattern = 0;
     cfg->drop_step_percent = 10;
     cfg->drop_notification_seconds = 10;
     cfg->drop_notification_pattern = 3;
-
-    fsdevMountSdmc();
+    cfg->log_enabled = 1;
 
     FILE* f = fopen("sdmc:/config/sys-notif-LED/settings.cfg", "r");
-    if (!f)
+    if (!f) {
+        logLine("[loadConfig] settings.cfg not found, using defaults");
         return;
+    }
 
     char line[128];
     while (fgets(line, sizeof(line), f)) {
@@ -84,6 +156,8 @@ static void loadConfig(SmartConfig* cfg) {
                 }
             } else if (strcmp(key, "discharge_interval_seconds") == 0) {
                 if (v >= 0 && v <= 600) cfg->discharge_interval_seconds = v;
+            } else if (strcmp(key, "discharge_duration_seconds") == 0) {
+                if (v >= 0 && v <= 600) cfg->discharge_duration_seconds = v;
             } else if (strcmp(key, "discharge_pattern") == 0) {
                 if (strcmp(value, "solid") == 0) {
                     cfg->discharge_pattern = 1;
@@ -124,15 +198,18 @@ static void loadConfig(SmartConfig* cfg) {
                 } else {
                     cfg->charge_pattern = 0;
                 }
+            } else if (strcmp(key, "log_enabled") == 0) {
+                if (v == 0 || v == 1) cfg->log_enabled = v;
             }
         }
     }
+    gLogEnabled = cfg->log_enabled;
+    logLine("[loadConfig] loaded settings: low=%d full_timeout=%d full_interval=%d",
+            cfg->low_battery_threshold, cfg->full_timeout_minutes, cfg->full_blink_toggle_seconds);
     fclose(f);
 }
 
 static void saveConfig(const SmartConfig* cfg) {
-    fsdevMountSdmc();
-
     DIR* dir = opendir("sdmc:/config/sys-notif-LED");
     if (dir) {
         closedir(dir);
@@ -141,8 +218,10 @@ static void saveConfig(const SmartConfig* cfg) {
     }
 
     FILE* f = fopen("sdmc:/config/sys-notif-LED/settings.cfg", "w");
-    if (!f)
+    if (!f) {
+        logLine("[saveConfig] failed to open settings.cfg for write");
         return;
+    }
 
     fprintf(f, "low_battery_threshold=%d\n", cfg->low_battery_threshold);
     fprintf(f, "full_timeout_minutes=%d\n", cfg->full_timeout_minutes);
@@ -157,6 +236,7 @@ static void saveConfig(const SmartConfig* cfg) {
     fprintf(f, "charge_pattern=%s\n", chargeName);
 
     fprintf(f, "discharge_interval_seconds=%d\n", cfg->discharge_interval_seconds);
+    fprintf(f, "discharge_duration_seconds=%d\n", cfg->discharge_duration_seconds);
     const char* pat = "off";
     if (cfg->discharge_pattern == 1) pat = "solid";
     else if (cfg->discharge_pattern == 2) pat = "dim";
@@ -185,11 +265,17 @@ static void saveConfig(const SmartConfig* cfg) {
     else if (cfg->drop_notification_pattern == 3) dropName = "fade";
     else if (cfg->drop_notification_pattern == 4) dropName = "blink";
     fprintf(f, "drop_notification_pattern=%s\n", dropName);
+    fprintf(f, "log_enabled=%d\n", cfg->log_enabled);
     fclose(f);
+    logLine("[saveConfig] saved settings");
 }
 
 int main(int argc, char* argv[]) {
     consoleInit(NULL);
+
+    // Mount SD once at startup for all FS operations
+    fsdevMountSdmc();
+    logLine("=== sys-notif-LED-config start ===");
 
     PadState pad;
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
@@ -197,6 +283,7 @@ int main(int argc, char* argv[]) {
 
     SmartConfig cfg;
     loadConfig(&cfg);
+    loadCurrentMode();
 
     int screen = 0;   // 0: main, 1: full, 2: not charging, 3: low
     int selected = 0; // index inside current screen
@@ -205,11 +292,15 @@ int main(int argc, char* argv[]) {
     while (appletMainLoop()) {
         padUpdate(&pad);
         u64 kDown = padGetButtonsDown(&pad);
+        if (kDown) {
+            logLine("[loop] screen=%d selected=%d kDown=%llx", screen, selected, (unsigned long long)kDown);
+        }
 
         if (kDown & HidNpadButton_Plus) {
             if (dirty) {
                 saveConfig(&cfg);
             }
+            logLine("[loop] Plus pressed, exiting app");
             break;
         }
 
@@ -231,6 +322,15 @@ int main(int argc, char* argv[]) {
             }
             if (kDown & HidNpadButton_Up) {
                 selected = (selected + 2) % 3;
+            }
+            if (kDown & HidNpadButton_Y) {
+                logLine("[loop] Y pressed on main screen, setting mode smart");
+                setModeSmart();
+            }
+            if (kDown & HidNpadButton_X) {
+                cfg.log_enabled = !cfg.log_enabled;
+                gLogEnabled = cfg.log_enabled;
+                dirty = true;
             }
             if (kDown & HidNpadButton_A) {
                 screen = selected + 1;
@@ -294,10 +394,10 @@ int main(int argc, char* argv[]) {
         } else if (screen == 2) {
             // Not charging (discharge + drop) screen
             if (kDown & HidNpadButton_Down) {
-                selected = (selected + 1) % 5;
+                selected = (selected + 1) % 6;
             }
             if (kDown & HidNpadButton_Up) {
-                selected = (selected + 4) % 5;
+                selected = (selected + 5) % 6;
             }
 
             if (kDown & HidNpadButton_Left) {
@@ -305,19 +405,23 @@ int main(int argc, char* argv[]) {
                     cfg.discharge_interval_seconds -= step;
                     if (cfg.discharge_interval_seconds < 0) cfg.discharge_interval_seconds = 0;
                     dirty = true;
-                } else if (selected == 1) {
+                } else if (selected == 1 && cfg.discharge_duration_seconds > 0) {
+                    cfg.discharge_duration_seconds -= step;
+                    if (cfg.discharge_duration_seconds < 0) cfg.discharge_duration_seconds = 0;
+                    dirty = true;
+                } else if (selected == 2) {
                     cfg.discharge_pattern--;
                     if (cfg.discharge_pattern < 0) cfg.discharge_pattern = 4;
                     dirty = true;
-                } else if (selected == 2 && cfg.drop_step_percent > 1) {
+                } else if (selected == 3 && cfg.drop_step_percent > 1) {
                     cfg.drop_step_percent -= step;
                     if (cfg.drop_step_percent < 1) cfg.drop_step_percent = 1;
                     dirty = true;
-                } else if (selected == 3 && cfg.drop_notification_seconds > 0) {
+                } else if (selected == 4 && cfg.drop_notification_seconds > 0) {
                     cfg.drop_notification_seconds -= step;
                     if (cfg.drop_notification_seconds < 0) cfg.drop_notification_seconds = 0;
                     dirty = true;
-                } else if (selected == 4) {
+                } else if (selected == 5) {
                     cfg.drop_notification_pattern--;
                     if (cfg.drop_notification_pattern < 0) cfg.drop_notification_pattern = 4;
                     dirty = true;
@@ -328,19 +432,23 @@ int main(int argc, char* argv[]) {
                     cfg.discharge_interval_seconds += step;
                     if (cfg.discharge_interval_seconds > 600) cfg.discharge_interval_seconds = 600;
                     dirty = true;
-                } else if (selected == 1) {
+                } else if (selected == 1 && cfg.discharge_duration_seconds < 600) {
+                    cfg.discharge_duration_seconds += step;
+                    if (cfg.discharge_duration_seconds > 600) cfg.discharge_duration_seconds = 600;
+                    dirty = true;
+                } else if (selected == 2) {
                     cfg.discharge_pattern++;
                     if (cfg.discharge_pattern > 4) cfg.discharge_pattern = 0;
                     dirty = true;
-                } else if (selected == 2 && cfg.drop_step_percent < 100) {
+                } else if (selected == 3 && cfg.drop_step_percent < 100) {
                     cfg.drop_step_percent += step;
                     if (cfg.drop_step_percent > 100) cfg.drop_step_percent = 100;
                     dirty = true;
-                } else if (selected == 3 && cfg.drop_notification_seconds < 600) {
+                } else if (selected == 4 && cfg.drop_notification_seconds < 600) {
                     cfg.drop_notification_seconds += step;
                     if (cfg.drop_notification_seconds > 600) cfg.drop_notification_seconds = 600;
                     dirty = true;
-                } else if (selected == 4) {
+                } else if (selected == 5) {
                     cfg.drop_notification_pattern++;
                     if (cfg.drop_notification_pattern > 4) cfg.drop_notification_pattern = 0;
                     dirty = true;
@@ -393,7 +501,9 @@ int main(int argc, char* argv[]) {
         if (screen == 0) {
             printf("sys-notif-LED smart mode config\n\n");
             printf("Use Up/Down to choose category, A to open\n");
-            printf("Press + to save and exit\n\n");
+            printf("Y: set mode to SMART (writes type=smart)\n");
+            printf("Press + to save and exit\n");
+            printf("Logging: %s (X toggles)\n\n", cfg.log_enabled ? "On" : "Off");
 
             printf("%c Full / Charging\n", selected == 0 ? '>' : ' ');
             printf("%c Not charging\n",  selected == 1 ? '>' : ' ');
@@ -405,6 +515,12 @@ int main(int argc, char* argv[]) {
             else if (cfg.full_pattern == 3) fullName = "Fade";
             else if (cfg.full_pattern == 4) fullName = "Blink";
 
+            const char* chargeName = "Off";
+            if (cfg.charge_pattern == 1) chargeName = "Solid";
+            else if (cfg.charge_pattern == 2) chargeName = "Dim";
+            else if (cfg.charge_pattern == 3) chargeName = "Fade";
+            else if (cfg.charge_pattern == 4) chargeName = "Blink";
+
             const char* idleName = "Off";
             if (cfg.discharge_pattern == 1) idleName = "Solid";
             else if (cfg.discharge_pattern == 2) idleName = "Dim";
@@ -413,9 +529,12 @@ int main(int argc, char* argv[]) {
 
             printf("Full: timeout %d min, interval %d s, pattern %s\n",
                    cfg.full_timeout_minutes, cfg.full_blink_toggle_seconds, fullName);
-            printf("Not charging: idle %d s, pattern %s\n",
-                   cfg.discharge_interval_seconds, idleName);
+            printf("Charging<100%%: interval %d s, pattern %s\n",
+                   cfg.charge_interval_seconds, chargeName);
+            printf("Not charging: every %d s for %d s, pattern %s\n",
+                   cfg.discharge_interval_seconds, cfg.discharge_duration_seconds, idleName);
             printf("Low: threshold %d%%, interval %d s\n", cfg.low_battery_threshold, cfg.low_interval_seconds);
+            printf("\nCurrent mode: %s\n", gCurrentMode);
         } else if (screen == 1) {
             printf("Full / Charging settings (B to go back)\n\n");
             printf("Hold X for steps of 5\n\n");
@@ -453,10 +572,11 @@ int main(int argc, char* argv[]) {
             printf("Not charging settings (B to go back)\n\n");
             printf("Hold X for steps of 5\n\n");
             printf("%c Idle interval: %d seconds (0 = disabled)\n", selected == 0 ? '>' : ' ', cfg.discharge_interval_seconds);
-            printf("%c Idle pattern: %s\n", selected == 1 ? '>' : ' ', patName);
-            printf("%c Drop step: %d%%\n", selected == 2 ? '>' : ' ', cfg.drop_step_percent);
-            printf("%c Drop duration: %d seconds (0 = off)\n", selected == 3 ? '>' : ' ', cfg.drop_notification_seconds);
-            printf("%c Drop pattern: %s\n", selected == 4 ? '>' : ' ', dropName);
+            printf("%c Idle duration: %d seconds (0 = default)\n", selected == 1 ? '>' : ' ', cfg.discharge_duration_seconds);
+            printf("%c Idle pattern: %s\n", selected == 2 ? '>' : ' ', patName);
+            printf("%c Drop step: %d%%\n", selected == 3 ? '>' : ' ', cfg.drop_step_percent);
+            printf("%c Drop duration: %d seconds (0 = off)\n", selected == 4 ? '>' : ' ', cfg.drop_notification_seconds);
+            printf("%c Drop pattern: %s\n", selected == 5 ? '>' : ' ', dropName);
         } else if (screen == 3) {
             const char* lowName2 = "Off";
             if (cfg.low_pattern == 1) lowName2 = "Solid";
@@ -473,6 +593,22 @@ int main(int argc, char* argv[]) {
 
         if (dirty) {
             printf("\nPending changes (will be saved on +)\n");
+        }
+
+        // Purple credit line at bottom-right
+        PrintConsole* con = consoleGetDefault();
+        if (con) {
+            int rows = con->consoleHeight;
+            int cols = con->consoleWidth;
+            const char* credit = "made with <3 by neo0oen";
+            int len = (int)strlen(credit);
+            int col = cols - len;
+            if (col < 0) col = 0;
+            // Two-line purple credit, visually larger
+            int row = rows - 1;
+            if (row < 1) row = 1;
+            printf("\x1b[%d;%dH\x1b[35m%s\x1b[0m", row, col + 1, credit);
+            printf("\x1b[%d;%dH\x1b[35m%s\x1b[0m", rows, col + 1, credit);
         }
 
         consoleUpdate(NULL);

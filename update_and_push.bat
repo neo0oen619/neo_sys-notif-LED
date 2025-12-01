@@ -65,25 +65,23 @@ REM Check if anything is staged
 git diff --cached --quiet
 if %errorlevel%==0 (
     echo.
-    echo No changes to commit.
-    pause
-    exit /b 0
-)
-
-echo.
-echo Committing with message: "%COMMIT_MSG%"
-git commit -m "%COMMIT_MSG%"
-if errorlevel 1 (
+    echo No changes to commit. Using existing HEAD snapshot.
+) else (
     echo.
-    echo [ERROR] git commit failed.
-    pause
-    exit /b 1
+    echo Committing with message: "%COMMIT_MSG%"
+    git commit -m "%COMMIT_MSG%"
+    if errorlevel 1 (
+        echo.
+        echo [ERROR] git commit failed.
+        pause
+        exit /b 1
+    )
 )
 
 echo.
 echo Pushing HEAD to the main branch on GitHub using the username and token you entered...
-echo Repo: https://github.com/neo0oen619/sys-notif-LED.git (HEAD -> main, force)
-git push "https://%GH_USER%:%GH_TOKEN%@github.com/neo0oen619/sys-notif-LED.git" HEAD:main --force
+echo Repo: https://github.com/neo0oen619/neo_sys-notif-LED.git (HEAD -> main, force)
+git push "https://%GH_USER%:%GH_TOKEN%@github.com/neo0oen619/neo_sys-notif-LED.git" HEAD:main --force
 REM If you want to avoid overwriting remote history, remove the --force flag above.
 
 if errorlevel 1 (
