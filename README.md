@@ -29,7 +29,7 @@ When *Smart* is selected, the sysmodule uses battery/charging state and your con
 
 ## Config app (sys-notif-LED-config)
 
-The included NRO sys-notif-LED-config lets you configure Smart mode from the homebrew menu and also switch the active mode to **Smart** without using the overlay. All sliders are used by the sysmodule in Smart mode:
+The included NRO sys-notif-LED-config lets you configure Smart mode from the homebrew menu and also switch the active mode to **Smart** without using the overlay. All sliders are used by the sysmodule in Smart mode, and some now have live timers:
 
 - **Full / Charging**
   - Full-charge timeout (minutes).
@@ -52,4 +52,33 @@ The included NRO sys-notif-LED-config lets you configure Smart mode from the hom
   - On the main screen, press **Y** to set the current mode to **Smart** (writes type=smart and a reset flag for the sysmodule).
 
 The LED continues to run its patterns while the system is awake; only a full system sleep stops the sysmodule from updating state.
+
+### Smart full-timeout sleep and timers
+
+When Smart is active, the config app shows live countdowns:
+
+- On **Full / Charging**, the `Full timeout` line displays the remaining time until the Smart full-charge timeout expires.
+- On **Not charging**, the `Idle interval` line displays the remaining seconds until the next idle pattern burst when the idle timer is active.
+
+In **System / Logging** you also have:
+
+- **Sleep LED**: `Keep pattern` / `Off at timeout`
+  - Controls whether the LED is turned off or kept as-is when the Smart full-timeout expires.
+- **Full timeout**: `Sleep` / `No sleep`
+  - When combined with the `screenoff` helper (see below), the console will be sent to real sleep when the Smart full-timeout reaches zero.
+
+After a Smart full-timeout–triggered sleep via `screenoff`, waking the console will restart the full-timeout cycle and allow the LED to show its notifications again while charging at 100%.
+
+## Screen-off helper (screenoff.nro)
+
+The `switch/screenoff.nro` app provides a “screen off but stay awake” mode:
+
+- Turns the LCD backlight off while keeping Horizon and all sysmodules (including sys-notif-LED) running.
+- Disables auto-sleep while it runs so Smart timers and LED patterns continue.
+- Works with two sleep strategies:
+  - **Smart sleep**: if Smart full-timeout + `Full timeout: Sleep` is configured, `screenoff` watches the sysmodule’s status file and requests sleep exactly when the Smart full-timeout reaches zero. On wake, it restores the backlight/auto-sleep and drops a flag so the Smart full-timeout cycle restarts.
+  - **Fallback sleep**: if Smart sleep is not configured or the status file is unavailable, `screenoff` puts the console to sleep after ~10 minutes with the screen off.
+- Shows a purple credit line anchored at the bottom-right: `made with <3 by neo0oen619`.
+
+Place this app at `switch/switch/screenoff.nro` so it appears in the homebrew menu. You can optionally wrap it in an NSP forwarder if you want a HOME menu icon.
 

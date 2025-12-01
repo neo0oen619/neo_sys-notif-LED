@@ -114,6 +114,26 @@ public:
         });
         list->addItem(batteryItem);
 
+        auto screenOffItem = new tsl::elm::ListItem("Turn screen backlight OFF");
+        screenOffItem->setClickListener([this](u64 keys) {
+            if (keys & HidNpadButton_A) {
+                appletSetLcdBacklightOffEnabled(true);
+                return true;
+            }
+            return false;
+        });
+        list->addItem(screenOffItem);
+
+        auto screenOnItem = new tsl::elm::ListItem("Turn screen backlight ON");
+        screenOnItem->setClickListener([this](u64 keys) {
+            if (keys & HidNpadButton_A) {
+                appletSetLcdBacklightOffEnabled(false);
+                return true;
+            }
+            return false;
+        });
+        list->addItem(screenOnItem);
+
         auto modeDrawer = new tsl::elm::CustomDrawer([this](tsl::gfx::Renderer *renderer, s32 x, s32 y, s32 w, s32 h) {
             std::string line = "Current mode: " + modeString;
             renderer->drawString(line.c_str(), false, x + 3, y + 30, 20, renderer->a(0xFFFF));

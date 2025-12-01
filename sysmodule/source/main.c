@@ -4,6 +4,7 @@
 #include <switch.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <time.h>
 
 #define INNER_HEAP_SIZE 0x80000
 #define MAX_PADS 8
@@ -27,6 +28,11 @@ static int smartFullToggleCounter = 0;
 static bool smartFullBlinkPhase = false;
 static int smartFull100Counter = 0;
 static bool smartFullTimeout = false;
+static time_t smartFullChargedAt = 0;
+static bool smartKeepLedOnSleep = false;
+static bool smartSleepOnFullTimeout = false;
+static int smartFullRemainingSeconds = -1;
+static int smartIdleRemainingSeconds = -1;
 
 static int smartLowBatteryThreshold = 15;
 static int smartFullTimeoutMinutes = 30;
@@ -68,6 +74,7 @@ static void applyOffPattern(void);
 static void applyBlinkPattern(void);
 static void changeLed(void);
 static void handleFullBlinkNotification(void);
+static void writeStatus(void);
 
 static void applyPatternCode(int code) {
     switch (code) {
@@ -173,6 +180,24 @@ static void handleFullBlinkNotification(void) {
     }
 }
 
+static void writeStatus(void) {
+    DIR* dir = opendir("sdmc:/config/sys-notif-LED");
+    if (dir) {
+        closedir(dir);
+    } else {
+        mkdir("sdmc:/config/sys-notif-LED", 0777);
+    }
+
+    FILE* f = fopen("sdmc:/config/sys-notif-LED/status.txt", "w");
+    if (!f) {
+        return;
+    }
+
+    fprintf(f, "full_remaining_seconds=%d\n", smartFullRemainingSeconds);
+    fprintf(f, "idle_remaining_seconds=%d\n", smartIdleRemainingSeconds);
+    fclose(f);
+}
+
 static void loadSmartConfig(void) {
     int low = 15;
     int timeoutMin = 30;
@@ -187,6 +212,8 @@ static void loadSmartConfig(void) {
     int fullPat = 4;
     int lowPat = 4;
     int chargePat = 3;
+    int keepLed = 0;
+    int sleepOnFull = 0;
 
     FILE* f = fopen("sdmc:/config/sys-notif-LED/settings.cfg", "r");
     if (f) {
@@ -274,6 +301,10 @@ static void loadSmartConfig(void) {
                     } else {
                         lowPat = 0;
                     }
+                } else if (strcmp(key, "sleep_keep_led") == 0) {
+                    if (v == 0 || v == 1) keepLed = v;
+                } else if (strcmp(key, "sleep_on_full_timeout") == 0) {
+                    if (v == 0 || v == 1) sleepOnFull = v;
                 }
             }
         }
@@ -305,6 +336,10 @@ static void loadSmartConfig(void) {
     smartFullPattern = fullPat;
     smartLowPattern = lowPat;
     smartChargePattern = chargePat;
+    smartKeepLedOnSleep = (keepLed != 0);
+    smartSleepOnFullTimeout = (sleepOnFull != 0);
+    smartFullRemainingSeconds = -1;
+    smartIdleRemainingSeconds = -1;
 }
 
 
@@ -531,16 +566,29 @@ int main(int argc, char* argv[]) {
         if (file) {
             fclose(file);
             remove("sdmc:/config/sys-notif-LED/reset");
-            FILE* file = fopen("sdmc:/config/sys-notif-LED/type", "r");
-        if (file) {
+            FILE* file2 = fopen("sdmc:/config/sys-notif-LED/type", "r");
+            if (file2) {
                 char buffer[256];
-                if (fgets(buffer, sizeof(buffer), file) != NULL) {
+                if (fgets(buffer, sizeof(buffer), file2) != NULL) {
                     buffer[strcspn(buffer, "\n")] = 0;
                     setPattern(buffer);
                 }
-                fclose(file);
+                fclose(file2);
                 changeLed();
             }
+        }
+        file = fopen("sdmc:/config/sys-notif-LED/full_timeout_reset", "r");
+        if (file) {
+            fclose(file);
+            remove("sdmc:/config/sys-notif-LED/full_timeout_reset");
+            smartFull100Counter = 0;
+            smartFullTimeout = false;
+            smartFullToggleCounter = 0;
+            smartFullBlinkPhase = false;
+            smartFullBlinkActiveLoops = 0;
+            smartFullChargedAt = 0;
+            smartFullRemainingSeconds = -1;
+            smartLastState = -1;
         }
         if (smartSelected) {
             PsmChargerType chargerType;
@@ -562,15 +610,45 @@ int main(int argc, char* argv[]) {
                 smartFadeCountdown = 0;
 
                 smartFull100Counter++;
-                if (smartFull100Counter >= smartFullTimeoutLoops) {
-                    smartFullTimeout = true;
+
+                time_t now = time(NULL);
+                if (now != (time_t)-1) {
+                    if (smartFullChargedAt == 0) {
+                        smartFullChargedAt = now;
+                    }
+                    if (smartFullTimeoutMinutes > 0) {
+                        time_t elapsed = now - smartFullChargedAt;
+                        if (elapsed >= (time_t)(smartFullTimeoutMinutes * 60)) {
+                            smartFullTimeout = true;
+                            smartFullRemainingSeconds = 0;
+                        } else {
+                            smartFullRemainingSeconds = (int)(smartFullTimeoutMinutes * 60 - elapsed);
+                        }
+                    } else {
+                        smartFullRemainingSeconds = -1;
+                    }
+                } else {
+                    if (smartFullTimeoutMinutes > 0) {
+                        if (smartFull100Counter >= smartFullTimeoutLoops) {
+                            smartFullTimeout = true;
+                            smartFullRemainingSeconds = 0;
+                        } else {
+                            int remainingLoops = smartFullTimeoutLoops - smartFull100Counter;
+                            if (remainingLoops < 0) remainingLoops = 0;
+                            smartFullRemainingSeconds = remainingLoops / 2;
+                        }
+                    } else {
+                        smartFullRemainingSeconds = -1;
+                    }
                 }
 
                 if (smartFullTimeout) {
-                    if (smartLastState != 0) {
-                        applyOffPattern();
-                        smartLastState = 0;
-                        changeLed();
+                    if (!smartKeepLedOnSleep) {
+                        if (smartLastState != 0) {
+                            applyOffPattern();
+                            smartLastState = 0;
+                            changeLed();
+                        }
                     }
                 } else {
                     handleFullBlinkNotification();
@@ -581,8 +659,11 @@ int main(int argc, char* argv[]) {
                 smartFullToggleCounter = 0;
                 smartFullBlinkPhase = false;
                 smartFullBlinkActiveLoops = 0;
+                smartFullChargedAt = 0;
+                smartFullRemainingSeconds = -1;
 
                 if (onBattery) {
+                    smartIdleRemainingSeconds = -1;
                     if (smartBatterySegment == -1) {
                         smartBatterySegment = currentSegment;
                     }
@@ -675,6 +756,7 @@ int main(int argc, char* argv[]) {
                                     smartLastState = smartDischargePattern;
                                     changeLed();
                                 }
+                                smartIdleRemainingSeconds = 0;
                             } else {
                                 smartDischargeIntervalCounter++;
                                 if (smartDischargeIntervalCounter >= smartDischargeIntervalLoops) {
@@ -691,11 +773,19 @@ int main(int argc, char* argv[]) {
                                         smartLastState = smartDischargePattern;
                                         changeLed();
                                     }
+                                    smartIdleRemainingSeconds = 0;
                                 } else {
                                     if (smartLastState != 0) {
                                         applyOffPattern();
                                         smartLastState = 0;
                                         changeLed();
+                                    }
+                                    if (smartDischargeIntervalLoops > 0) {
+                                        int remainingLoops = smartDischargeIntervalLoops - smartDischargeIntervalCounter;
+                                        if (remainingLoops < 0) remainingLoops = 0;
+                                        smartIdleRemainingSeconds = remainingLoops / 2;
+                                    } else {
+                                        smartIdleRemainingSeconds = -1;
                                     }
                                 }
                             }
@@ -704,6 +794,7 @@ int main(int argc, char* argv[]) {
                 } else {
                     smartBatterySegment = -1;
                     smartFadeCountdown = 0;
+                    smartIdleRemainingSeconds = -1;
 
                     if (smartChargeIntervalLoops <= 0) {
                         if (smartChargePattern == 0) {
@@ -825,6 +916,12 @@ int main(int argc, char* argv[]) {
                 batteryStatus = -1;
                 changeLed();
             }
+        }
+
+        static int statusCounter = 0;
+        if (++statusCounter >= 4) { // ~ every 2 seconds (loop sleeps 0.5s)
+            statusCounter = 0;
+            writeStatus();
         }
         svcSleepThread(500000000ULL);
     }
