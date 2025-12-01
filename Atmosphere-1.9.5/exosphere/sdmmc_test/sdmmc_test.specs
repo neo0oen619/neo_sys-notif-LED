@@ -1,4 +1,0 @@
-%rename link old_link
-
-*link:
-%(old_link) -T %:getenv(TOPDIR /sdmmc_test.ld) --gc-sections --nmagic
