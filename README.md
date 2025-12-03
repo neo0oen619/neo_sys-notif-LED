@@ -60,7 +60,6 @@ This repository mirrors the root of your Switch’s SD card.  To install:
   - Hit **Y** to write out the current mode as **Smart**.  (This writes `type=smart` and triggers a reset flag so the sysmodule uses your new settings.)
 - Use **screenoff.nro** whenever you want to turn off the LCD but keep the system awake.  Smart timers will keep counting down; the LED will resume once you wake it up.  It also shows a subtle purple credit line: `made with <3 by neo0oen619`.
 
-**Pro tip:** If you just want simple two‑player multiseat fun, go use Duo.  Wait… wrong project, but the advice stands.
 
 ## 🧩 Tech Stack & Build Instructions (Optional)
 - Built with **devkitPro/libnx** for the Nintendo Switch.
